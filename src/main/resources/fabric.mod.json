@@ -1,0 +1,23 @@
+{
+	"schemaVersion": 1,
+	"id": "ghostframe",
+	"version": "${version}",
+	"name": "Ghost Frame",
+	"description": "Мембрана фантома — декоративный инструмент: Shift+ПКМ по табличке прячет доску и оставляет висящий текст (удар по месту возвращает табличку с её текстом), ПКМ по рамке с предметом делает рамку невидимой, предмет остаётся висеть и его можно менять.",
+	"authors": [
+		"deaefer"
+	],
+	"license": "MIT",
+	"environment": "server",
+	"entrypoints": {
+		"main": [
+			"ghostframe.GhostFrame"
+		]
+	},
+	"depends": {
+		"fabricloader": ">=0.20.1",
+		"fabric-api": "*",
+		"minecraft": "${minecraft_dep}",
+		"java": ">=25"
+	}
+}
