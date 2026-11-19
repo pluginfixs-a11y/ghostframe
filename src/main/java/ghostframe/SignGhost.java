@@ -20,6 +20,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.util.ARGB;
+import net.minecraft.util.Brightness;
 import net.minecraft.util.Mth;
 import net.minecraft.util.ProblemReporter;
 import net.minecraft.world.InteractionHand;
@@ -85,7 +86,14 @@ public final class SignGhost {
 	static final float TEXT_OFFSET_Z = 0.046666667F;
 	/** Сдвиг настенной таблички: доска прижата к стене, текст сидит на ней же. */
 	static final float WALL_OFFSET_Y = -0.3125F;
-	static final float WALL_OFFSET_Z = -0.4375F;
+	/**
+	 * Настенная табличка превращается в граффити: доски больше нет, поэтому текст ставится к стене
+	 * вплотную — на {@code GRAFFITI_DEPTH} от её плоскости. Ванильные смещения ({@code -0.4375} доски
+	 * плюс {@code 0.046667} текста) дают 0.109 от стены: это правильное место для текста НА доске, но
+	 * без доски он висит в воздухе. Сантиметр — чтобы глифы не мерцали с текстурой блока (у текста
+	 * к тому же {@code POLYGON_OFFSET}).
+	 */
+	static final double GRAFFITI_DEPTH = 0.012;
 	/** {@code SignBlockEntity.getTextLineHeight()}. */
 	static final int LINE_HEIGHT_PX = 10;
 	/** Блок текста таблички: 4 строки, отрисованы вокруг точки трансформации. */
@@ -219,13 +227,22 @@ public final class SignGhost {
 			return false;
 		}
 		String anchorTag = anchorTag(pos);
+		// у настенной таблички обратная сторона смотрит в стену: ваниль ставит её текст почти в
+		// плоскость стены (−0.4375 доски − 0.046667 текста = 0.0158 от неё), а без доски он совпал бы
+		// с местом лицевой — второй дисплей не нужен. Пустую сторону не создаём вовсе: иначе
+		// настенная табличка с текстом только сзади спряталась бы в полностью невидимую клетку
+		boolean graffiti = state.getBlock() instanceof WallSignBlock;
+		boolean hasFront = !isEmpty(front);
+		boolean hasBack = !graffiti && !isEmpty(back);
 
 		// сначала создаём дисплеи: если что-то не так, табличка должна остаться на месте
-		Display.TextDisplay frontDisplay = create(level, pos, state, front, true, anchorTag, dataTag);
-		Display.TextDisplay backDisplay = isEmpty(back)
-				? null
-				: create(level, pos, state, back, false, anchorTag, dataTag);
-		if (frontDisplay == null || (backDisplay == null && !isEmpty(back))) {
+		Display.TextDisplay frontDisplay = hasFront ? create(level, pos, state, front, true, anchorTag, dataTag) : null;
+		Display.TextDisplay backDisplay = hasBack ? create(level, pos, state, back, false, anchorTag, dataTag) : null;
+		if (!hasFront && !hasBack) {
+			// показывать нечего: маркер без текста — невидимая занятая клетка
+			return false;
+		}
+		if ((hasFront && frontDisplay == null) || (hasBack && backDisplay == null)) {
 			// половина текста без второй стороны — хуже, чем не трогать табличку
 			GhostFrame.LOGGER.warn("GhostFrame: не удалось создать дисплей для таблички на {}", pos);
 			return false;
@@ -237,7 +254,10 @@ public final class SignGhost {
 			GhostFrame.LOGGER.warn("GhostFrame: установку маркера отменили на {}", pos);
 			return false;
 		}
-		level.addFreshEntity(frontDisplay);
+		// пустая сторона — null: добавлять её вслепую нельзя, это NPE уже после установки маркера
+		if (frontDisplay != null) {
+			level.addFreshEntity(frontDisplay);
+		}
 		if (backDisplay != null) {
 			level.addFreshEntity(backDisplay);
 		}
@@ -263,6 +283,11 @@ public final class SignGhost {
 		out.putInt("line_width", LINE_WIDTH);
 		out.putByte("text_opacity", (byte) -1);
 		out.store("billboard", Display.BillboardConstraints.CODEC, Display.BillboardConstraints.FIXED);
+		if (text.hasGlowingText()) {
+			// светящиеся чернила у таблички горят в темноте (полная яркость), дисплею для этого нужен
+			// собственный brightness override — иначе граффити в тёмном углу просто чёрное
+			out.store("brightness", Brightness.CODEC, Brightness.FULL_BRIGHT);
+		}
 		out.store("transformation", Transformation.EXTENDED_CODEC,
 				new Transformation(null, null, new Vector3f(DISPLAY_SCALE, DISPLAY_SCALE, DISPLAY_SCALE), null));
 
@@ -355,15 +380,19 @@ public final class SignGhost {
 	}
 
 	/**
-	 * Точка дисплея: центр текста таблички в мировых координатах (та же формула, что в
-	 * {@code StandingSignRenderer.textTransformation}), сдвинутый вниз так, чтобы низ блока текста
-	 * дисплея совпал с низом блока текста таблички.
+	 * Точка дисплея. Для стоячей таблички — центр её текста по формулам
+	 * {@code StandingSignRenderer.textTransformation}, сдвинутый вниз так, чтобы низ блока текста
+	 * дисплея совпал с низом блока текста таблички. Для настенной — граффити на стене: та же высота,
+	 * но вплотную к блоку, на котором табличка висела.
 	 */
 	static Vec3 displayPos(BlockPos pos, BlockState state, float angle, boolean front) {
 		boolean wall = state.getBlock() instanceof WallSignBlock;
 		double dy = TEXT_OFFSET_Y + (wall ? WALL_OFFSET_Y : 0.0F) + TEXT_ANCHOR_SHIFT;
-		// у обратной стороны TEXT_OFFSET поворачивается на 180° до смещения, поэтому z зеркальный
-		double dz = (front ? TEXT_OFFSET_Z : -TEXT_OFFSET_Z) + (wall ? WALL_OFFSET_Z : 0.0F);
+		// у настенной доски текст стоит на ней (0.109 от стены), без доски это «висит в воздухе»,
+		// поэтому граффити прижимается к самой плоскости стены
+		double dz = wall
+				? GRAFFITI_DEPTH - 0.5
+				: (front ? TEXT_OFFSET_Z : -TEXT_OFFSET_Z);
 		double radians = Math.toRadians(-angle);
 		return Vec3.atLowerCornerOf(pos)
 				.add(0.5 + dz * Math.sin(radians), 0.5 + dy, 0.5 + dz * Math.cos(radians));

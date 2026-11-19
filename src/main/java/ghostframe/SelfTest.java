@@ -1,6 +1,7 @@
 package ghostframe;
 
 import java.util.List;
+import java.util.UUID;
 import com.mojang.math.Transformation;
 import net.fabricmc.fabric.api.entity.FakePlayer;
 import net.minecraft.core.BlockPos;
@@ -10,6 +11,7 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.util.ARGB;
+import net.minecraft.util.Brightness;
 import net.minecraft.util.Mth;
 import net.minecraft.util.ProblemReporter;
 import net.minecraft.world.InteractionHand;
@@ -17,6 +19,7 @@ import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.Display;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.EntitySpawnReason;
 import net.minecraft.world.entity.EntityTypes;
 import net.minecraft.world.entity.decoration.ItemFrame;
 import net.minecraft.world.entity.player.Player;
@@ -61,7 +64,7 @@ public final class SelfTest {
 		return ORIGIN.offset(1 + 3 * (index % 5), 0, 1 + 3 * (index / 5));
 	}
 
-	private static final int CELLS = 12;
+	private static final int CELLS = 15;
 
 	private SelfTest() {
 	}
@@ -131,6 +134,9 @@ public final class SelfTest {
 			testSignAnchorGuard(level);
 			testStandingSign(level);
 			testEmptySign(level);
+			testBackOnlyRefused(level);
+			testStandingBackOnly(level);
+			testOldGhostRestore(level);
 			testNeighbourChest(level);
 		} catch (Throwable t) {
 			failures++;
@@ -237,14 +243,18 @@ public final class SelfTest {
 	private static void testSignGeometry(ServerLevel level) {
 		BlockPos pos = cell(5);
 
-		BlockState wall = Blocks.OAK_WALL_SIGN.defaultBlockState().setValue(WallSignBlock.FACING, Direction.EAST);
-		float wallAngle = SignGhost.signAngle(wall);
-		Vec3 wallFront = SignGhost.displayPos(pos, wall, wallAngle, true);
-		Vec3 wallBack = SignGhost.displayPos(pos, wall, wallAngle, false);
-		boolean wallOk = near(wallFront, pos, 0.109167, 0.322917, 0.5)
-				&& near(wallBack, pos, 0.015833, 0.322917, 0.5)
-				&& sameYaw(SignGhost.displayYaw(wallAngle, true), 270.0F)
-				&& sameYaw(SignGhost.displayYaw(wallAngle, false), 90.0F);
+		// настенная — граффити: для каждой из четырёх сторон текст в 1.2 см от плоскости стены,
+		// yaw берётся из FACING; у настенной обратного дисплея нет вовсе
+		boolean wallOk = true;
+		StringBuilder wallDetail = new StringBuilder();
+		for (Direction facing : new Direction[] {Direction.EAST, Direction.SOUTH, Direction.WEST, Direction.NORTH}) {
+			BlockState wall = Blocks.OAK_WALL_SIGN.defaultBlockState().setValue(WallSignBlock.FACING, facing);
+			float angle = SignGhost.signAngle(wall);
+			Vec3 at = SignGhost.displayPos(pos, wall, angle, true);
+			boolean ok = flush(at, pos, facing) && sameYaw(SignGhost.displayYaw(angle, true), expectedYaw(facing));
+			wallOk &= ok;
+			wallDetail.append(facing.name(), 0, 1).append(ok ? "+" : "!").append(at).append(' ');
+		}
 
 		BlockState ground = Blocks.OAK_SIGN.defaultBlockState().setValue(StandingSignBlock.ROTATION, 0);
 		Vec3 groundFront = SignGhost.displayPos(pos, ground, SignGhost.signAngle(ground), true);
@@ -266,14 +276,14 @@ public final class SelfTest {
 				&& (glow & 0xFFFFFF) == (DyeColor.LIME.getTextColor() & 0xFFFFFF);
 
 		check("sign-geometry", wallOk && groundOk && textOk && colorOk,
-				("стена=%s обратная=%s земля=%s/%s текст=%s цвет=%s/%s "
-						+ "(ожидание 0.1092/0.3229/0.5 + yaw 270, 0.0158/0.3229/0.5 + yaw 90, "
-						+ "0.5/0.6354/0.5467 и 0.5/0.6354/0.4533, «Привет\\nМир\\n\\n», 0.4·краситель/краситель)")
-						.formatted(wallFront, wallBack, groundFront, groundBack, text.replace("\n", "\\n"),
+				("стена=%s земля=%s/%s текст=%s цвет=%s/%s "
+						+ "(ожидание граффити 0.012 от стены для E/S/W/N с yaw 270/0/90/180, "
+						+ "стоячая 0.5/0.6354/0.5467 и 0.5/0.6354/0.4533, «Привет\\nМир\\n\\n», 0.4·краситель/краситель)")
+						.formatted(wallDetail.toString().trim(), groundFront, groundBack, text.replace("\n", "\\n"),
 								Integer.toHexString(ink), Integer.toHexString(glow)));
 	}
 
-	/** Скрытие настенной таблички: маркер вместо блока, дисплеи на две стороны, возврат по удару. */
+	/** Скрытие настенной таблички: маркер вместо блока, текст граффити у стены, возврат по удару. */
 	private static void testSignHideRestore(ServerLevel level) {
 		BlockPos pos = cell(6);
 		BlockState signState = Blocks.OAK_WALL_SIGN.defaultBlockState().setValue(WallSignBlock.FACING, Direction.EAST);
@@ -303,14 +313,15 @@ public final class SelfTest {
 		check("sign-hide", hidden == InteractionResult.SUCCESS_SERVER
 						&& level.getBlockState(pos).is(Blocks.STRUCTURE_VOID)
 						&& player.getMainHandItem().getCount() == 2
-						&& displays.size() == 2,
-				"result=%s маркер=%s мембран=%d дисплеев=%d (ожидание SUCCESS_SERVER, true, 2, 2)"
+						&& displays.size() == 1,
+				"result=%s маркер=%s мембран=%d дисплеев=%d (ожидание SUCCESS_SERVER, true, 2, 1 — граффити одно)"
 						.formatted(hidden, level.getBlockState(pos).is(Blocks.STRUCTURE_VOID),
 								player.getMainHandItem().getCount(), displays.size()));
 
 		boolean displayOk = false;
 		boolean placementOk = false;
 		String displayDetail = "нет дисплея";
+		String placementDetail = "нет дисплея";
 		if (!displays.isEmpty()) {
 			TagValueOutput out = TagValueOutput.createWithContext(ProblemReporter.DISCARDING, level.registryAccess());
 			displays.get(0).saveWithoutId(out);
@@ -324,28 +335,35 @@ public final class SelfTest {
 			boolean scaleOk = tagInput.read("transformation", Transformation.EXTENDED_CODEC)
 					.map(transformation -> Math.abs(transformation.scale().x() - 0.4166667F) < 1.0E-4F)
 					.orElse(false);
-			displayOk = background == 0 && billboard.equals("fixed") && lineWidth == SignGhost.LINE_WIDTH && text && scaleOk;
-			displayDetail = "background=%d billboard=%s line_width=%d текст=%s масштаб=%s (ожидание 0, fixed, %d, true, %.4f)"
-					.formatted(background, billboard, lineWidth, text, scaleOk, SignGhost.LINE_WIDTH, SignGhost.DISPLAY_SCALE);
+			// светящиеся чернила — полная яркость, как у таблички: иначе граффити темнеет в тени
+			boolean brightOk = tagInput.read("brightness", Brightness.CODEC)
+					.map(brightness -> brightness.block() == 15 && brightness.sky() == 15)
+					.orElse(false);
+			displayOk = background == 0 && billboard.equals("fixed") && lineWidth == 1000
+					&& text && scaleOk && brightOk;
+			displayDetail = ("background=%d billboard=%s line_width=%d текст=%s масштаб=%s яркость=%s "
+					+ "(ожидание 0, fixed, %d, true, %.4f, 15/15)")
+					.formatted(background, billboard, lineWidth, text, scaleOk, brightOk,
+							SignGhost.LINE_WIDTH, SignGhost.DISPLAY_SCALE);
 
 			float angle = SignGhost.signAngle(signState);
-			Vec3 front = SignGhost.displayPos(pos, signState, angle, true);
-			Vec3 back = SignGhost.displayPos(pos, signState, angle, false);
-			boolean frontSeen = false;
-			boolean backSeen = false;
-			for (Display.TextDisplay display : displays) {
+			boolean placedOnWall = false;
+			Vec3 seen = Vec3.ZERO;
+			if (displays.size() == 1) {
 				TagValueOutput state = TagValueOutput.createWithContext(ProblemReporter.DISCARDING, level.registryAccess());
-				display.saveWithoutId(state);
+				displays.get(0).saveWithoutId(state);
 				ValueInput in = TagValueInput.create(ProblemReporter.DISCARDING, level.registryAccess(), state.buildResult());
-				Vec3 at = in.read("Pos", Vec3.CODEC).orElse(Vec3.ZERO);
+				seen = in.read("Pos", Vec3.CODEC).orElse(Vec3.ZERO);
 				Vec2 rot = in.read("Rotation", Vec2.CODEC).orElse(Vec2.ZERO);
-				frontSeen |= at.distanceToSqr(front) < 1.0E-8 && sameYaw(rot.x, SignGhost.displayYaw(angle, true));
-				backSeen |= at.distanceToSqr(back) < 1.0E-8 && sameYaw(rot.x, SignGhost.displayYaw(angle, false));
+				// граффити прижато к стене: x всего на 0.012 от её плоскости, yaw как у таблички
+				placedOnWall = near(seen, pos, 0.012, 0.322917, 0.5)
+						&& sameYaw(rot.x, 270.0F);
 			}
-			placementOk = frontSeen && backSeen;
+			placementOk = placedOnWall;
+			placementDetail = "граффити у стены=%s в точке %s (ожидание x=+0.012)".formatted(placedOnWall, seen);
 		}
 		check("sign-display-nbt", displayOk, displayDetail);
-		check("sign-display-sides", placementOk, "лицо и обратная сторона на своих местах=" + placementOk);
+		check("sign-display-sides", placementOk, placementDetail);
 
 		boolean restored = false;
 		boolean breakAllowed = SignGhost.onBlockBreak(level, player, pos, level.getBlockState(pos));
@@ -421,8 +439,9 @@ public final class SelfTest {
 	}
 
 	/**
-	 * Стоячая табличка: угол берётся из {@code ROTATION} (сегмент 4 = 90°), а не из FACING.
-	 * Заодно проверяется квадрант поворота — у настенной EAST-таблички sin/cos вырождены.
+	 * Стоячая табличка: угол берётся из {@code ROTATION} (сегмент 4 = 90°), а не из FACING, обе стороны
+	 * висят на месте таблички (никакого граффити), а обычные чернила не получают brightness — в отличие
+	 * от светящихся.
 	 */
 	private static void testStandingSign(ServerLevel level) {
 		BlockPos pos = cell(9);
@@ -434,7 +453,8 @@ public final class SelfTest {
 			check("standing-sign", false, "нет block entity стоячей таблички");
 			return;
 		}
-		sign.setText(signText("Стоя", "чая"), true);
+		sign.setText(signText("Стоя", "чая", false), true);
+		sign.setText(signText("Сзади", "", false), false);
 
 		FakePlayer player = player(level, Vec3.atCenterOf(pos).add(0, 0, 0.6),
 				new ItemStack(Items.PHANTOM_MEMBRANE, 2), true, false);
@@ -442,27 +462,39 @@ public final class SelfTest {
 		List<Display.TextDisplay> displays = signDisplays(level, pos);
 
 		boolean placed = false;
+		boolean noBrightness = false;
 		Vec3 at = Vec3.ZERO;
 		float yaw = -1.0F;
-		if (displays.size() == 1) {
+		if (displays.size() == 2) {
 			TagValueOutput out = TagValueOutput.createWithContext(ProblemReporter.DISCARDING, level.registryAccess());
 			displays.get(0).saveWithoutId(out);
-			ValueInput in = TagValueInput.create(ProblemReporter.DISCARDING, level.registryAccess(), out.buildResult());
+			CompoundTag tag = out.buildResult();
+			ValueInput in = TagValueInput.create(ProblemReporter.DISCARDING, level.registryAccess(), tag);
 			at = in.read("Pos", Vec3.CODEC).orElse(Vec3.ZERO);
 			yaw = in.read("Rotation", Vec2.CODEC).map(rot -> rot.x).orElse(-1.0F);
 			// ROTATION 4 -> 90°: sin(-90°) = -1, cos(-90°) = 0, z смещения 0.046667
-			placed = near(at, pos, 0.453333, 0.635417, 0.5) && sameYaw(yaw, 90.0F);
+			placed = near(at, pos, 0.453333, 0.635417, 0.5) && sameYaw(yaw, 90.0F)
+					&& displays.stream().anyMatch(display -> {
+						TagValueOutput other = TagValueOutput.createWithContext(ProblemReporter.DISCARDING, level.registryAccess());
+						display.saveWithoutId(other);
+						ValueInput data = TagValueInput.create(ProblemReporter.DISCARDING, level.registryAccess(), other.buildResult());
+						Vec3 backAt = data.read("Pos", Vec3.CODEC).orElse(Vec3.ZERO);
+						Vec2 backRot = data.read("Rotation", Vec2.CODEC).orElse(Vec2.ZERO);
+						return near(backAt, pos, 0.546667, 0.635417, 0.5) && sameYaw(backRot.x, 270.0F);
+					});
+			noBrightness = in.read("brightness", Brightness.CODEC).isEmpty();
 		}
 
 		boolean breakAllowed = SignGhost.onBlockBreak(level, player, pos, level.getBlockState(pos));
 		boolean restored = level.getBlockEntity(pos) instanceof SignBlockEntity back
-				&& back.getFrontText().getMessage(0, false).getString().equals("Стоя");
+				&& back.getFrontText().getMessage(0, false).getString().equals("Стоя")
+				&& back.getBackText().getMessage(0, false).getString().equals("Сзади");
 
-		check("standing-sign", hidden == InteractionResult.SUCCESS_SERVER && placed && !breakAllowed && restored
-						&& signDisplays(level, pos).isEmpty(),
-				("result=%s дисплеев=%d позиция=%s yaw=%.1f возврат=%s "
-						+ "(ожидание SUCCESS_SERVER, 1, 0.4533/0.6354/0.5, 90.0, true)")
-						.formatted(hidden, displays.size(), at, yaw, restored));
+		check("standing-sign", hidden == InteractionResult.SUCCESS_SERVER && placed && noBrightness && !breakAllowed
+						&& restored && signDisplays(level, pos).isEmpty(),
+				("result=%s дисплеев=%d позиция=%s yaw=%.1f без яркости=%s возврат=%s "
+						+ "(ожидание SUCCESS_SERVER, 2, 0.4533/0.6354/0.5 и обратная 0.5467, 90/270, true, true)")
+						.formatted(hidden, displays.size(), at, yaw, noBrightness, restored));
 	}
 
 	/** Пустую табличку мод не прячет: невидимый маркер без текста — ловушка без подсказок. */
@@ -475,6 +507,30 @@ public final class SelfTest {
 		InteractionResult result = SignGhost.onUseBlock(player, level, InteractionHand.MAIN_HAND, blockHit(pos));
 
 		check("sign-empty-refused", result == InteractionResult.PASS
+						&& level.getBlockState(pos).is(Blocks.OAK_WALL_SIGN)
+						&& player.getMainHandItem().getCount() == 2
+						&& signDisplays(level, pos).isEmpty(),
+				"result=%s блок=%s мембран=%d дисплеев=%d (ожидание PASS, oak_wall_sign, 2, 0)"
+						.formatted(result, level.getBlockState(pos).getBlock(),
+								player.getMainHandItem().getCount(), signDisplays(level, pos).size()));
+	}
+
+	/**
+	 * Настенная табличка с текстом только с обратной стороны: граффити нечего показать (обратная
+	 * сторона смотрит в стену), поэтому мод её не прячет — иначе осталась бы полностью пустая клетка.
+	 */
+	private static void testBackOnlyRefused(ServerLevel level) {
+		BlockPos pos = cell(12);
+		BlockState signState = Blocks.OAK_WALL_SIGN.defaultBlockState().setValue(WallSignBlock.FACING, Direction.EAST);
+		if (placeSign(level, pos, signState) instanceof SignBlockEntity sign) {
+			sign.setText(signText("", ""), true);
+			sign.setText(signText("Сзади", ""), false);
+		}
+
+		FakePlayer player = player(level, Vec3.atCenterOf(pos), new ItemStack(Items.PHANTOM_MEMBRANE, 2), true, false);
+		InteractionResult result = SignGhost.onUseBlock(player, level, InteractionHand.MAIN_HAND, blockHit(pos));
+
+		check("sign-back-only-refused", result == InteractionResult.PASS
 						&& level.getBlockState(pos).is(Blocks.OAK_WALL_SIGN)
 						&& player.getMainHandItem().getCount() == 2
 						&& signDisplays(level, pos).isEmpty(),
@@ -522,6 +578,83 @@ public final class SelfTest {
 								player.getMainHandItem().getCount()));
 	}
 
+	/**
+	 * Стоячая табличка с пустой лицевой стороной и текстом сзади: дисплеев ровно один (обратный),
+	 * удар по маркеру возвращает обе стороны. Пустая сторона не должна давать null-дисплей.
+	 */
+	private static void testStandingBackOnly(ServerLevel level) {
+		BlockPos pos = cell(13);
+		level.setBlock(pos.below(), Blocks.STONE.defaultBlockState(), 3);
+		level.setBlock(pos, Blocks.AIR.defaultBlockState(), 3);
+		BlockState signState = Blocks.OAK_SIGN.defaultBlockState().setValue(StandingSignBlock.ROTATION, 0);
+		level.setBlock(pos, signState, 3);
+		if (!(level.getBlockEntity(pos) instanceof SignBlockEntity sign)) {
+			check("standing-back-only", false, "нет block entity стоячей таблички");
+			return;
+		}
+		sign.setText(signText("", ""), true);
+		sign.setText(signText("Сзади", ""), false);
+
+		FakePlayer player = player(level, Vec3.atCenterOf(pos).add(0, 0, 0.6),
+				new ItemStack(Items.PHANTOM_MEMBRANE, 2), true, false);
+		InteractionResult hidden = SignGhost.onUseBlock(player, level, InteractionHand.MAIN_HAND, blockHit(pos));
+		List<Display.TextDisplay> displays = signDisplays(level, pos);
+		boolean breakAllowed = SignGhost.onBlockBreak(level, player, pos, level.getBlockState(pos));
+		boolean restored = level.getBlockEntity(pos) instanceof SignBlockEntity back
+				&& back.getBackText().getMessage(0, false).getString().equals("Сзади")
+				&& back.getFrontText().getMessage(0, false).getString().isEmpty();
+		check("standing-back-only", hidden == InteractionResult.SUCCESS_SERVER && displays.size() == 1
+						&& !breakAllowed && restored && signDisplays(level, pos).isEmpty(),
+				"result=%s дисплеев=%d ломать=%s возврат=%s (ожидание SUCCESS_SERVER, 1, false, true)"
+						.formatted(hidden, displays.size(), breakAllowed, restored));
+	}
+
+	/**
+	 * Совместимость с 1.2.0: у старого «призрака» настенной таблички было два дисплея (лицо на 0.109 и
+	 * обратная на 0.0158). Удар по маркеру должен убрать оба и вернуть табличку, ничего не оставив.
+	 */
+	private static void testOldGhostRestore(ServerLevel level) {
+		BlockPos pos = cell(14);
+		BlockState signState = Blocks.OAK_WALL_SIGN.defaultBlockState().setValue(WallSignBlock.FACING, Direction.EAST);
+		if (placeSign(level, pos, signState) instanceof SignBlockEntity sign) {
+			sign.setText(signText("Старый", "призрак"), true);
+		}
+		FakePlayer player = player(level, Vec3.atCenterOf(pos), new ItemStack(Items.PHANTOM_MEMBRANE, 2), true, false);
+		SignGhost.onUseBlock(player, level, InteractionHand.MAIN_HAND, blockHit(pos));
+		List<Display.TextDisplay> hidden = signDisplays(level, pos);
+
+		boolean cloned = false;
+		if (hidden.size() == 1) {
+			Display.TextDisplay original = hidden.get(0);
+			TagValueOutput out = TagValueOutput.createWithContext(ProblemReporter.DISCARDING, level.registryAccess());
+			original.saveWithoutId(out);
+			Display.TextDisplay second = EntityTypes.TEXT_DISPLAY.create(level, EntitySpawnReason.COMMAND);
+			if (second != null) {
+				second.load(TagValueInput.create(ProblemReporter.DISCARDING, level.registryAccess(), out.buildResult()));
+				// load очищает Tags — вешаем теги оригинала вручную
+				for (String tag : original.entityTags()) {
+					second.addTag(tag);
+				}
+				// saveWithoutId несёт UUID — клону нужен свой, иначе addFreshEntity молча откажет
+				second.setUUID(UUID.randomUUID());
+				// место второго дисплея старого формата: 0.0158 от плоскости стены
+				second.setPos(pos.getX() + 0.0158333, pos.getY() + 0.3229167, pos.getZ() + 0.5);
+				cloned = level.addFreshEntity(second);
+			}
+		}
+
+		int before = signDisplays(level, pos).size();
+		boolean breakAllowed = SignGhost.onBlockBreak(level, player, pos, level.getBlockState(pos));
+		boolean restored = level.getBlockEntity(pos) instanceof SignBlockEntity back
+				&& back.getFrontText().getMessage(0, false).getString().equals("Старый")
+				&& back.getFrontText().getMessage(1, false).getString().equals("призрак");
+		check("old-ghost-restore", cloned && before == 2 && !breakAllowed && restored
+						&& signDisplays(level, pos).isEmpty(),
+				"клонирован=%s до удара дисплеев=%d ломать=%s возврат=%s дисплеев=%d "
+						.formatted(cloned, before, breakAllowed, restored, signDisplays(level, pos).size())
+						+ "(ожидание true, 2, false, true, 0)");
+	}
+
 	private static BlockEntity placeSign(ServerLevel level, BlockPos pos, BlockState signState) {
 		level.setBlock(pos.west(), Blocks.STONE.defaultBlockState(), 3);
 		level.setBlock(pos, Blocks.AIR.defaultBlockState(), 3);
@@ -530,10 +663,14 @@ public final class SelfTest {
 	}
 
 	private static SignText signText(String first, String second) {
+		return signText(first, second, true);
+	}
+
+	private static SignText signText(String first, String second, boolean glowing) {
 		Component[] lines = {
 				Component.literal(first), Component.literal(second), Component.empty(), Component.empty()
 		};
-		return new SignText(lines, lines, DyeColor.LIME, true);
+		return new SignText(lines, lines, DyeColor.LIME, glowing);
 	}
 
 	private static BlockHitResult blockHit(BlockPos pos) {
@@ -549,6 +686,34 @@ public final class SelfTest {
 		return Math.abs(actual.x - (pos.getX() + dx)) < 1.0E-4
 				&& Math.abs(actual.y - (pos.getY() + dy)) < 1.0E-4
 				&& Math.abs(actual.z - (pos.getZ() + dz)) < 1.0E-4;
+	}
+
+	/** Граффити: точка на 1.2 см от плоскости стены, по центру клетки вдоль неё и на высоте текста. */
+	private static boolean flush(Vec3 at, BlockPos pos, Direction facing) {
+		double depth = switch (facing) {
+			case EAST -> at.x - pos.getX();
+			case WEST -> pos.getX() + 1.0 - at.x;
+			case SOUTH -> at.z - pos.getZ();
+			case NORTH -> pos.getZ() + 1.0 - at.z;
+			default -> -1.0;
+		};
+		double along = facing.getAxis() == Direction.Axis.X
+				? at.z - (pos.getZ() + 0.5)
+				: at.x - (pos.getX() + 0.5);
+		return Math.abs(depth - 0.012) < 1.0E-4
+				&& Math.abs(along) < 1.0E-4
+				&& Math.abs(at.y - (pos.getY() + 0.322917)) < 1.0E-4;
+	}
+
+	/** Ожидаемый yaw дисплея по стороне таблички — литералами, чтобы ошибка знака в моде не прошла молча. */
+	private static float expectedYaw(Direction facing) {
+		return switch (facing) {
+			case EAST -> 270.0F;
+			case SOUTH -> 0.0F;
+			case WEST -> 90.0F;
+			case NORTH -> 180.0F;
+			default -> Float.NaN;
+		};
 	}
 
 	private static boolean sameYaw(float a, float b) {
