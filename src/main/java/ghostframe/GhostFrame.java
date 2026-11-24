@@ -1,6 +1,7 @@
 package ghostframe;
 
 import net.fabricmc.api.ModInitializer;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.event.player.PlayerBlockBreakEvents;
 import net.fabricmc.fabric.api.event.player.UseBlockCallback;
@@ -24,6 +25,13 @@ public class GhostFrame implements ModInitializer {
 		UseBlockCallback.EVENT.register(SignGhost::onUseBlock);
 		PlayerBlockBreakEvents.BEFORE.register((level, player, pos, state, blockEntity) ->
 				SignGhost.onBlockBreak(level, player, pos, state));
+		// маркер могут снести извне — подмести осиротевший текст и на старте, и раз в 30 с
+		ServerLifecycleEvents.SERVER_STARTED.register(SignGhost::cleanupOrphans);
+		ServerTickEvents.END_SERVER_TICK.register(server -> {
+			if (server.getTickCount() % 600 == 0) {
+				SignGhost.cleanupOrphans(server);
+			}
+		});
 		LOGGER.info("GhostFrame: мембрана фантома прячет рамки и таблички");
 
 		if (System.getProperty("ghostframe.selftest") != null || System.getenv("GHOSTFRAME_SELFTEST") != null) {

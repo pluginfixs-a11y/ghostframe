@@ -16,6 +16,7 @@ import net.minecraft.nbt.NbtIo;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.ComponentSerialization;
 import net.minecraft.network.chat.MutableComponent;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
@@ -26,6 +27,7 @@ import net.minecraft.util.ProblemReporter;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.Display;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntitySpawnReason;
 import net.minecraft.world.entity.EntityTypes;
 import net.minecraft.world.entity.player.Player;
@@ -362,6 +364,62 @@ public final class SignGhost {
 
 	private static void discard(ServerLevel level, BlockPos pos) {
 		find(level, pos).forEach(Display.TextDisplay::discard);
+	}
+
+	/**
+	 * Убирает текст, чей маркер разрушен извне (взрыв, /setblock, пистон, текущая вода). Раньше такой
+	 * текст висел навсегда и лечился только ручным {@code /kill @e[type=text_display,tag=ghostframe:sign]}.
+	 * Дисплеи с нашим тегом, но без якоря, не трогаем: не знаем, где их маркер.
+	 */
+	public static void cleanupOrphans(MinecraftServer server) {
+		int removed = 0;
+		for (ServerLevel level : server.getAllLevels()) {
+			List<Display.TextDisplay> orphans = new ArrayList<>();
+			for (Entity entity : level.getAllEntities()) {
+				if (!(entity instanceof Display.TextDisplay display) || !display.entityTags().contains(TAG_SIGN)
+						|| !hasDataTag(display)) {
+					// тег легко подделать /summon; без наших данных это не наш призрак
+					continue;
+				}
+				BlockPos anchor = anchorFromTags(display);
+				if (anchor == null || !level.isLoaded(anchor)) {
+					continue;
+				}
+				if (!level.getBlockState(anchor).is(Blocks.STRUCTURE_VOID)) {
+					orphans.add(display);
+				}
+			}
+			for (Display.TextDisplay display : orphans) {
+				display.discard();
+				removed++;
+			}
+		}
+		if (removed > 0) {
+			GhostFrame.LOGGER.info("GhostFrame: убрано {} осиротевших текстовых дисплеев", removed);
+		}
+	}
+
+	private static boolean hasDataTag(Display.TextDisplay display) {
+		return display.entityTags().stream().anyMatch(tag -> tag.startsWith(TAG_DATA));
+	}
+
+	private static BlockPos anchorFromTags(Display.TextDisplay display) {
+		for (String tag : display.entityTags()) {
+			if (!tag.startsWith(TAG_ANCHOR)) {
+				continue;
+			}
+			String[] parts = tag.substring(TAG_ANCHOR.length()).split(",");
+			if (parts.length != 3) {
+				return null;
+			}
+			try {
+				return new BlockPos(Integer.parseInt(parts[0]), Integer.parseInt(parts[1]),
+						Integer.parseInt(parts[2]));
+			} catch (NumberFormatException e) {
+				return null;
+			}
+		}
+		return null;
 	}
 
 	private static CompoundTag decode(Display.TextDisplay display) {

@@ -118,7 +118,10 @@ membrane per hide (creative: free); restoring is free, because nothing is create
   packet handler's own distance test.
 
 Known limits: an explosion, `/setblock`, falling sand/gravel, flowing water or a piston can destroy the marker, leaving
-the text without a way back — clean it with `/kill @e[type=text_display,tag=ghostframe:sign]`. The marker cell is occupied:
+the text without a way back. The mod sweeps for such orphans at server start and every 30 seconds and discards
+them, so no manual `/kill @e[type=text_display,tag=ghostframe:sign]` is needed; a *valid* ghost is never touched.
+The sweep only sees loaded entity sections, so a display in a `HIDDEN` section is cleaned when that section becomes
+visible. The marker cell is occupied:
 no other block can be put into the cell while the text is hidden. A waterlogged sign loses its water when hidden.
 Punching the marker also cancels the client's predicted break, so holding the attack button through the marker can
 make the client target the block behind it — tap instead of holding. A ghost hidden by 1.2.0 keeps the old
@@ -183,6 +186,11 @@ with `D:\serv 26.2`.
 ## Install
 
 Fabric Loader ≥ 0.20.1 + Fabric API on the server, jar into `mods/`.
+
+## Changes
+
+**1.3.1** — orphaned text displays (marker destroyed externally) are swept automatically at startup and
+every 30 seconds instead of requiring a manual `/kill`.
 
 ## Build
 

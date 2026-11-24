@@ -138,6 +138,7 @@ public final class SelfTest {
 			testStandingBackOnly(level);
 			testOldGhostRestore(level);
 			testNeighbourChest(level);
+			testOrphanCleanup(level, server);
 		} catch (Throwable t) {
 			failures++;
 			GhostFrame.LOGGER.error("SELFTEST упал", t);
@@ -653,6 +654,27 @@ public final class SelfTest {
 				"клонирован=%s до удара дисплеев=%d ломать=%s возврат=%s дисплеев=%d "
 						.formatted(cloned, before, breakAllowed, restored, signDisplays(level, pos).size())
 						+ "(ожидание true, 2, false, true, 0)");
+	}
+
+	/** Маркер снесли извне: подметальщик должен убрать висящий текст, но не тронуть живые призраки. */
+	private static void testOrphanCleanup(ServerLevel level, MinecraftServer server) {
+		BlockPos pos = new BlockPos(ORIGIN.getX() + 13, ORIGIN.getY(), ORIGIN.getZ() + 13);
+		BlockState state = Blocks.OAK_WALL_SIGN.defaultBlockState().setValue(WallSignBlock.FACING, Direction.EAST);
+		if (!(placeSign(level, pos, state) instanceof SignBlockEntity sign)) {
+			check("orphan-cleanup", false, "нет block entity таблички");
+			return;
+		}
+		sign.setText(signText("Осиротевший", ""), true);
+		FakePlayer player = player(level, Vec3.atCenterOf(pos).add(0.6, 0, 0),
+				new ItemStack(Items.PHANTOM_MEMBRANE, 2), true, false);
+		InteractionResult hidden = SignGhost.onUseBlock(player, level, InteractionHand.MAIN_HAND, blockHit(pos));
+		int before = signDisplays(level, pos).size();
+		level.setBlock(pos, Blocks.AIR.defaultBlockState(), 3); // маркер снёс взрыв/пистон
+		SignGhost.cleanupOrphans(server);
+		int after = signDisplays(level, pos).size();
+		check("orphan-cleanup", hidden == InteractionResult.SUCCESS_SERVER && before == 1 && after == 0,
+				"hidden=%s дисплеев до=%d после=%d (ожидание SUCCESS_SERVER, 1, 0)"
+						.formatted(hidden, before, after));
 	}
 
 	private static BlockEntity placeSign(ServerLevel level, BlockPos pos, BlockState signState) {
