@@ -33,6 +33,7 @@ import net.minecraft.world.entity.EntityTypes;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.BucketItem;
+import net.minecraft.world.item.FireChargeItem;
 import net.minecraft.world.item.FlintAndSteelItem;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
@@ -526,6 +527,8 @@ public final class SignGhost {
 	private static boolean placesBlock(ItemStack stack) {
 		return stack.getItem() instanceof BlockItem
 				|| stack.getItem() instanceof BucketItem
-				|| stack.getItem() instanceof FlintAndSteelItem;
+				|| stack.getItem() instanceof FireChargeItem
+				|| stack.getItem() instanceof FlintAndSteelItem
+				|| stack.is(Items.FIRE_CHARGE);
 	}
 }
